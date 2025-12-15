@@ -155,32 +155,69 @@ def register_recipe_tools(mcp: FastMCP, mealie: MealieFetcher) -> None:
             raise ToolError(error_msg)
 
     @mcp.tool()
-    def update_recipe(
+    def update_recipe_ingredients(
         slug: str,
         ingredients: List[str],
-        instructions: List[str],
     ) -> Dict[str, Any]:
-        """Replaces the ingredients and instructions of an existing recipe.
+        """Replaces the ingredients of an existing recipe.
+
+        Call this before updating instructions so Mealie can generate ingredient
+        reference IDs that can be used in instruction ingredientReferences.
 
         Args:
             slug: The unique text identifier for the recipe to be updated.
             ingredients: A list of ingredients for the recipe include quantities and units.
-            instructions: A list of instructions for preparing the recipe.
 
         Returns:
             Dict[str, Any]: The updated recipe details.
         """
         try:
-            logger.info({"message": "Updating recipe", "slug": slug})
+            logger.info({"message": "Updating recipe ingredients", "slug": slug})
             recipe_json = mealie.get_recipe(slug)
             recipe = Recipe.model_validate(recipe_json)
             recipe.recipeIngredient = [RecipeIngredient(note=i) for i in ingredients]
+            return mealie.update_recipe(slug, recipe.model_dump(exclude_none=True))
+        except Exception as e:
+            error_msg = f"Error updating recipe ingredients '{slug}': {str(e)}"
+            logger.error({"message": error_msg})
+            logger.debug(
+                {"message": "Error traceback", "traceback": traceback.format_exc()}
+            )
+            raise ToolError(error_msg)
+
+    @mcp.tool()
+    def update_recipe_instructions(
+        slug: str, instructions: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """Replaces the instructions of an existing recipe.
+
+        Provide ingredientReferences using the reference IDs generated after updating
+        ingredients with update_recipe_ingredients.
+
+        Args:
+            slug: The unique text identifier for the recipe to be updated.
+            instructions: A list of instruction objects, each with a `text` field and
+                optional `ingredientReferences` values that should link back to recipe
+                ingredients.
+
+        Returns:
+            Dict[str, Any]: The updated recipe details.
+        """
+        try:
+            logger.info({"message": "Updating recipe instructions", "slug": slug})
+            recipe_json = mealie.get_recipe(slug)
+            recipe = Recipe.model_validate(recipe_json)
             recipe.recipeInstructions = [
-                RecipeInstruction(text=i) for i in instructions
+                RecipeInstruction.model_validate(
+                    instruction
+                    if isinstance(instruction, dict)
+                    else {"text": str(instruction)}
+                )
+                for instruction in instructions
             ]
             return mealie.update_recipe(slug, recipe.model_dump(exclude_none=True))
         except Exception as e:
-            error_msg = f"Error updating recipe '{slug}': {str(e)}"
+            error_msg = f"Error updating recipe instructions '{slug}': {str(e)}"
             logger.error({"message": error_msg})
             logger.debug(
                 {"message": "Error traceback", "traceback": traceback.format_exc()}
