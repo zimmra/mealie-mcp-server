@@ -210,6 +210,11 @@ def register_recipe_tools(mcp: FastMCP, mealie: MealieFetcher) -> None:
             logger.info({"message": "Updating recipe instructions", "slug": slug})
             recipe_json = mealie.get_recipe(slug)
             recipe = Recipe.model_validate(recipe_json)
+            valid_refs = {
+                ingredient.referenceId
+                for ingredient in recipe.recipeIngredient
+                if ingredient.referenceId
+            }
             parsed_instructions: List[RecipeInstruction] = []
             for instruction in instructions:
                 if isinstance(instruction, RecipeInstruction):
@@ -223,6 +228,19 @@ def register_recipe_tools(mcp: FastMCP, mealie: MealieFetcher) -> None:
                 else:
                     raise ToolError(
                         f"Instruction entries must be strings, RecipeInstruction models, or dicts; received {type(instruction).__name__}"
+                    )
+            for instr in parsed_instructions:
+                unknown_refs = [
+                    ref for ref in instr.ingredientReferences if ref not in valid_refs
+                ]
+                if unknown_refs and valid_refs:
+                    raise ToolError(
+                        f"Invalid ingredientReferences for recipe '{slug}': {unknown_refs}"
+                    )
+                if unknown_refs and not valid_refs:
+                    raise ToolError(
+                        f"No ingredient reference IDs present on recipe '{slug}'. "
+                        "Call update_recipe_ingredients before adding instructions with ingredientReferences."
                     )
             recipe.recipeInstructions = parsed_instructions
             return mealie.update_recipe(slug, recipe.model_dump(exclude_none=True))
