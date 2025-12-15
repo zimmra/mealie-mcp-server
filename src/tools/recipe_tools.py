@@ -1,12 +1,13 @@
 import logging
 import traceback
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 
 from mealie import MealieFetcher
 from models.recipe import Recipe, RecipeIngredient, RecipeInstruction
+from pydantic import ValidationError
 
 logger = logging.getLogger("mealie-mcp")
 
@@ -130,7 +131,7 @@ def register_recipe_tools(mcp: FastMCP, mealie: MealieFetcher) -> None:
 
         Args:
             name: The name of the new recipe to be created.
-            ingredients: A list of ingredients for the recipe include quantities and units.
+            ingredients: A list of ingredients for the recipe including quantities and units.
             instructions: A list of instructions for preparing the recipe.
 
         Returns:
@@ -166,7 +167,7 @@ def register_recipe_tools(mcp: FastMCP, mealie: MealieFetcher) -> None:
 
         Args:
             slug: The unique text identifier for the recipe to be updated.
-            ingredients: A list of ingredients for the recipe include quantities and units.
+            ingredients: A list of ingredients for the recipe including quantities and units.
 
         Returns:
             Dict[str, Any]: The updated recipe details.
@@ -187,7 +188,7 @@ def register_recipe_tools(mcp: FastMCP, mealie: MealieFetcher) -> None:
 
     @mcp.tool()
     def update_recipe_instructions(
-        slug: str, instructions: List[Dict[str, Any]]
+        slug: str, instructions: List[Union[RecipeInstruction, str, Dict[str, Any]]]
     ) -> Dict[str, Any]:
         """Replaces the instructions of an existing recipe.
 
@@ -196,9 +197,11 @@ def register_recipe_tools(mcp: FastMCP, mealie: MealieFetcher) -> None:
 
         Args:
             slug: The unique text identifier for the recipe to be updated.
-            instructions: A list of instruction objects, each with a `text` field and
-                optional `ingredientReferences` values that should link back to recipe
-                ingredients.
+            instructions: A list of instruction objects with `text` (str) and optional
+                `ingredientReferences` (List[str]) that should link back to ingredient
+                reference IDs on the recipe. Raw strings are accepted for simple steps,
+                and dictionary representations matching the RecipeInstruction schema are
+                also supported.
 
         Returns:
             Dict[str, Any]: The updated recipe details.
@@ -207,15 +210,31 @@ def register_recipe_tools(mcp: FastMCP, mealie: MealieFetcher) -> None:
             logger.info({"message": "Updating recipe instructions", "slug": slug})
             recipe_json = mealie.get_recipe(slug)
             recipe = Recipe.model_validate(recipe_json)
-            recipe.recipeInstructions = [
-                RecipeInstruction.model_validate(
-                    instruction
-                    if isinstance(instruction, dict)
-                    else {"text": str(instruction)}
-                )
-                for instruction in instructions
-            ]
+            parsed_instructions: List[RecipeInstruction] = []
+            for instruction in instructions:
+                if isinstance(instruction, RecipeInstruction):
+                    parsed_instructions.append(instruction)
+                elif isinstance(instruction, str):
+                    parsed_instructions.append(RecipeInstruction(text=instruction))
+                elif isinstance(instruction, dict):
+                    parsed_instructions.append(
+                        RecipeInstruction.model_validate(instruction)
+                    )
+                else:
+                    raise ToolError(
+                        f"Instruction entries must be strings, RecipeInstruction models, or dicts; received {type(instruction).__name__}"
+                    )
+            recipe.recipeInstructions = parsed_instructions
             return mealie.update_recipe(slug, recipe.model_dump(exclude_none=True))
+        except ValidationError as e:
+            error_msg = (
+                f"Invalid instruction format for recipe '{slug}': {e.errors()}"
+            )
+            logger.error({"message": error_msg})
+            logger.debug(
+                {"message": "Validation traceback", "traceback": traceback.format_exc()}
+            )
+            raise ToolError(error_msg)
         except Exception as e:
             error_msg = f"Error updating recipe instructions '{slug}': {str(e)}"
             logger.error({"message": error_msg})
